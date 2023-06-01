@@ -2094,20 +2094,20 @@ void LLVMCDFG::removeRedundantNodes()
                     continue;
                 }
             }
-            if(node->isLSaffine() && customIns != "OUTPUT"){ // for temp test, to be removed later
-                bool toRm = true;
-                auto strides = node->getLSstride();
-                for(auto &elem : strides){  // strides are all 0
-                    if(elem.second != 0){
-                        toRm = false;
-                        break;
-                    }
-                }
-                if(toRm){
-                    rmNodes.push_back(node);
-                    continue;
-                }
-            }
+            // if(node->isLSaffine() && customIns != "OUTPUT"){ // for temp test, to be removed later
+            //     bool toRm = true;
+            //     auto strides = node->getLSstride();
+            //     for(auto &elem : strides){  // strides are all 0
+            //         if(elem.second != 0){
+            //             toRm = false;
+            //             break;
+            //         }
+            //     }
+            //     if(toRm){
+            //         rmNodes.push_back(node);
+            //         continue;
+            //     }
+            // }
         }
         removed = !rmNodes.empty();
         outs() << "remove node: ";
