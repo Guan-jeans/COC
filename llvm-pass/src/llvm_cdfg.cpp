@@ -5522,7 +5522,12 @@ void LLVMCDFG::generateCDFG()
     handleGEPNodes();
     printDOT(_name + "_after_handleGEPNodes.dot");
 
-    affineAnalyze();
+    if(!_noPattern){
+        affineAnalyze();
+        outs() << ">>>>>> affine Access Node\n";
+        handleAffineLSNodes(); 
+        printDOT(_name + "_after_handleAffineLSNodes.dot");
+    }
 
     outs() << ">>>>>> Transfer PHINode to SELECT nodes\n";
     handlePHINodes(); 
@@ -5534,29 +5539,11 @@ void LLVMCDFG::generateCDFG()
 
         outs() << ">>>>>> Handle select Node\n";
         handleSelectNodes(); 
-    handleSelectNodes(); 
-        handleSelectNodes(); 
-    handleSelectNodes(); 
-        handleSelectNodes(); 
         printDOT(_name + "_after_handleSelectNodes.dot");
 
         outs() << ">>>>>> Generate MAC Node\n";
         genMACNodes(); 
-    genMACNodes(); 
-        genMACNodes(); 
-    genMACNodes(); 
-        genMACNodes(); 
         //printDOT(_name + "_after_genMACNodes.dot");
-    }
-
-    if(!_noPattern){
-        outs() << ">>>>>> affine Access Node\n";
-        handleAffineLSNodes(); 
-    handleAffineLSNodes(); 
-        handleAffineLSNodes(); 
-    handleAffineLSNodes(); 
-        handleAffineLSNodes(); 
-        printDOT(_name + "_after_handleAffineLSNodes.dot");
     }
 
     outs() << ">>>>>> Remove redundant nodes at first time\n";
@@ -5585,7 +5572,7 @@ void LLVMCDFG::generateCDFG()
     outs() << ">>>>>> Assign final node name\n";
     assignFinalNodeName();
     //printDOT(_name + "_after_assignFinalNodeName.dot");
-    printAffineDOT("affine.dot");
+    printAffineDOT("CDFG.dot");
     //printAffineDOT("affine_"+_name + ".dot");
 
     outs() << "Generate CDFG Ended\n";

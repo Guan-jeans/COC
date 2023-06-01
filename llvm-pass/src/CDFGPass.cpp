@@ -318,11 +318,17 @@ std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, s
 				internalBBs.insert((BasicBlock*)temBB);
 			}
 		}
+		errs() << "internalBBs: ";
+		for(auto iter:internalBBs){
+			errs()<< iter->getName() <<"; ";
+		}
+		errs() << "\n";
 		LoopStart->eraseFromParent();
 		LoopEnd->eraseFromParent();
 		for (auto &elem : mappingUnitMap){
 			errs() << "loop name: "<< elem.first << "\n";
 			nestLoop.clear();
+			finalnestloop.clear();
 			auto tem = elem.second.lp;
 			bool allin = true;
 			int level = 0;
@@ -338,6 +344,7 @@ std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, s
 				bool hereEntryBB = false;
 				for(auto BB : loopBBs){
 					if(BB == EntryBB){
+						assert(i!=0);
 						targetlevel = i -1;
 						hereEntryBB = true;
 					}
@@ -347,8 +354,8 @@ std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, s
 				finalnestloop[i] = nestLoop[i];
 			}
 			if(targetlevel=-1)
-				targetlevel = 0;
-			auto loopBBs = nestLoop[targetlevel]->getBlocks();
+				targetlevel = level-1;
+			auto loopBBs = finalnestloop[targetlevel]->getBlocks();
 			for(auto BB : loopBBs){
 				if(!internalBBs.count(BB)){
 					allin = false;
@@ -465,8 +472,8 @@ void scheduleTasks(std::map<int, LLVMCDFG*> CDFGs, std::map<int, std::pair<std::
 
 namespace {
     cl::opt<std::string> targetFuncName("fn", cl::init("na"), cl::desc("function name"));
-    cl::opt<bool> noACC("noACC", cl::desc("function name"));
-    cl::opt<bool> noPattern("noPattern", cl::init("na"), cl::desc("function name"));
+    cl::opt<bool> noACC("noACC", cl::init(false), cl::desc("forbid extraction of ACC-series operators"));
+    cl::opt<bool> noPattern("noPattern", cl::init(false), cl::desc("forbid the extraction of memory access pattern"));
     // cl::opt<std::string> cdfgType("type", cl::init("PartPred"), cl::desc("cdfg type, valid types = PartPred, Trig, TrMap, BrMap, DFGDISE"));
 
     struct CDFGPass : public FunctionPass {

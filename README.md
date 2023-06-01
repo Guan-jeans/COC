@@ -12,7 +12,7 @@ Frontend application compiler that generates CDFG from C code based on LLVM
 
 2. CMake
 
-3. C++-14
+3. C++-17
 
 
 
@@ -44,13 +44,12 @@ Frontend application compiler that generates CDFG from C code based on LLVM
 3. set llvm env
 
 ```sh
-    # add following env to .bashrc and then source ~/.bashrc.
-    # or directly export the env
-    export LLVM_HOME=/xxx/llvm/llvm-10.0.0-built/usr/local/bin
-    export PATH=$LLVM_HOME:$PATH
-    # or set the LLVM path in the CMakeLists.txt
+    # set the LLVM path in the CMakeLists.txt
     set(LLVM_INCLUDE_DIRS "/xxx/llvm-10.0.0-built/usr/local/include")
     set(LLVM_LIBRARY_DIRS "/xxx/llvm-10.0.0-built/usr/local/lib")
+    # set the LLVM path in the benchmark/compile.sh
+    export LLVM_HOME=/xxx/llvm/llvm-10.0.0-built/usr/local/bin
+    export PATH=$LLVM_HOME:$PATH
 ```
 
 ### Build
@@ -63,8 +62,25 @@ Using the script build.sh in this app-compiler directory
 
 ### Run
 
-Using the script build.sh in this app-compiler directory
+Run all benchmarks, You can forbid the dedicated extractions by parameters in parentheses
 
 ```sh
-./build.sh
+cd benchmark
+./run.sh (noACC) (noPattern)
+```
+
+Or run your own single benchmark foo.c
+```
+functionName(){
+    loop_begin();
+    for(){
+        ...
+    }
+    loop_end();
+}
+```
+
+```sh
+cd path_to_foo.c
+compile.sh foo functionName (noACC) (noPattern)
 ```

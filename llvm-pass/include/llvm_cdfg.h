@@ -1,7 +1,7 @@
 #ifndef __LLVM_CDFG_H__
 #define __LLVM_CDFG_H__
 
-#define DUMP_TMP_CDFG
+//#define DUMP_TMP_CDFG
 #define BITWIDTH 8
 
 
