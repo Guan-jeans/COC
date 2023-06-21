@@ -104,11 +104,14 @@ private:
     // constant
     DataType _constVal;
     bool _hasConst = false;
+    // constant
+    int _argNum;
+    bool _hasArgIn = false;
     // data width in bits
     int _dataBits;
 
     // initial Sel
-    varType _interval;//ISEL refresh per _interval cycles
+    // varType _interval;//ISEL refresh per _interval cycles
 
     // acc increment
     bool _isAcc = false;
@@ -124,7 +127,7 @@ private:
 
     // affine access pattern for Load/Store--key:level;value:stride
     bool _isLSaffine = false;
-    std::map<int, int> _LSstride;
+    std::map<int, varType> _LSstride;
     //start offset for pattern access(if _LSstart<0, LS is totally fixed)
     varType _LSstart;
     varType _LSbounds[3];
@@ -190,6 +193,12 @@ public:
 	void delConstVal(){ _constVal = 0; _hasConst = false; }
 	bool hasConst(){ return _hasConst; }
 
+    //ArgIn
+	int argNum(){ return _argNum; }
+	void setArgIn(int num){ _argNum = num; _hasArgIn = true;}
+	void delArgIn(){ _argNum = 0; _hasArgIn = false; }
+	bool hasArgIn(){ return _hasArgIn; }
+
     int dataBits(){ return _dataBits; }
     void setDataBits(int bits){ _dataBits = bits; }
 
@@ -203,10 +212,10 @@ public:
     varType getLSoffset(){return _LSoffset;}
 
     //record affine access of Load/Store
-    void setLSstride(std::map<int, int> LSpattern){ _LSstride = LSpattern;_isLSaffine = true;}
-    void setLSstride(int level, int levelLSpattern){ _LSstride[level] = levelLSpattern;_isLSaffine = true;}
-    int getLSstride(int level){return _LSstride[level];}
-    std::map<int, int> getLSstride(){return _LSstride;}
+    void setLSstride(std::map<int, varType> LSpattern){ _LSstride = LSpattern;_isLSaffine = true;}
+    void setLSstride(int level, varType levelLSpattern){ _LSstride[level] = levelLSpattern;_isLSaffine = true;}
+    varType getLSstride(int level){return _LSstride[level];}
+    std::map<int, varType> getLSstride(){return _LSstride;}
     bool isLSaffine() {return _isLSaffine;}
     void setLSbounds(varType bounds[3]){_LSbounds[0] = bounds[0];_LSbounds[1] = bounds[1];_LSbounds[2] = bounds[2];}
     varType* getLSbounds(){return _LSbounds;}
@@ -221,11 +230,11 @@ public:
     int isAccFirst(){return _accfirst;}
     bool hasInitial(){return _hasinitial;}
     void setInitial(int ini){_hasinitial = true;_initial = ini;}
-    void setISELInterval(varType interval){_interval = interval;}
-    varType getISELInterval(){return _interval;}
+    // void setISELInterval(varType interval){_interval = interval;}
+    // varType getISELInterval(){return _interval;}
     int getInitial(){return _initial;}
     void setAccPattern(varType count, varType interval, varType repeat){_accPattern["count"] = count; _accPattern["interval"] = interval; _accPattern["repeat"] = repeat;}
-    std::map<std::string, varType> getAccPattern(){if(_isAcc) return _accPattern; else return {};}
+    std::map<std::string, varType> getAccPattern(){if(_isAcc|_hasinitial) return _accPattern; else return {};}
 };
 
 

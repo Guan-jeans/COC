@@ -192,6 +192,25 @@ varType operator*(const int& op, const varType &var){
     varType result = var * op;
     return result;
 }
+varType operator*(const varType &var, const double& op){
+    varType result = 0;
+    if(var.value.index() == 2){
+        if(op == 1){
+            result = var;
+        }else{
+            result = "(" + std::get<std::string>(var.value) + ")*" + std::to_string(op);
+        }
+    }else if(var.value.index() == 0){
+        result = std::get<int>(var.value) * op;
+    }else if(var.value.index() == 1){
+        result = std::get<double>(var.value) * op;
+    }
+    return result;
+}
+varType operator*(const double& op, const varType &var){
+    varType result = var * op;
+    return result;
+}
 varType operator*(const varType &var1, const varType &var2){
     varType result = 0;
     int idx1 = var1.value.index(), idx2 = var2.value.index();
@@ -204,7 +223,7 @@ varType operator*(const varType &var1, const varType &var2){
     }else if(idx2 == 1){
         result = var1 * std::get<double>(var2.value);
     }else{
-        result = ((varType)var1).to_string() + "*" + ((varType)var2).to_string();
+        result = "(" + ((varType)var1).to_string() + ") * (" + ((varType)var2).to_string() + ")";
     }
     return result;
 }
@@ -323,6 +342,16 @@ bool operator==(const int& op, const varType &var){
         return false;
     }
 }
+//>
+bool operator>(const int& op, const varType &var){
+    if(var.value.index() == 0){
+        int varint = std::get<int>(var.value);
+        if(op > varint){
+            return true;
+        }
+    }
+    return false;
+}
 // accumulation
 varType operator+=(varType &var, const int& op){
     varType result = var + op;
@@ -337,6 +366,11 @@ varType operator+=(varType &var1, const varType &var2){
 varType operator-=(varType &var, const int& op){
     varType result = var - op;
     var = result;
+    return result;
+}
+varType operator-=(varType &var1, const varType &var2){
+    varType result = var1 - var2;
+    var1 = result;
     return result;
 }
 varType operator*=(varType &var, const int& op){
@@ -358,5 +392,17 @@ varType operator/=(varType &var, const int& op){
 varType operator/=(varType &var, const double& op){
     varType result = var / op;
     var = result;
+    return result;
+}
+
+varType varPow(int a, varType var){
+    varType result = 0;
+    if(var.value.index() == 2){
+        result = std::to_string(a) + " ^ (" + std::get<std::string>(var.value) + ")";
+    }else if(var.value.index() == 0){
+        result = pow(a, std::get<int>(var.value));
+    }else if(var.value.index() == 1){
+        result = pow(a, std::get<double>(var.value));
+    }
     return result;
 }

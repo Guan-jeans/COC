@@ -1,3 +1,4 @@
+#include <cmath>
 #include <queue>
 #include <iostream>
 #include <fstream>
@@ -27,6 +28,8 @@ class varType{
         friend varType operator*(const int& op, const varType &var);
         friend varType operator*(const varType &var, const int& op);
         friend varType operator*(const varType &var1, const varType &var2);
+        friend varType operator*(const double& op, const varType &var);
+        friend varType operator*(const varType &var, const double& op);
         // /
         friend varType operator/(const int& op, const varType &var);
         friend varType operator/(const varType &var, const int& op);
@@ -35,15 +38,20 @@ class varType{
         friend varType operator/(const varType &var1, const varType &var2);
         // %
         friend varType operator%(const varType &var, const int& op);
+        //<<
+        // friend varType operator%(const varType &var, const int& op);
         // ==
         friend bool operator==(const varType &var, const char* op);
         friend bool operator==(const char* op, const varType &var);
         friend bool operator==(const varType &var, const int& op);
         friend bool operator==(const int& op, const varType &var);
+        // >
+        friend bool operator>(const int& op, const varType &var);
 
         friend varType operator+=(varType &var, const int& op);
         friend varType operator+=(varType &var1, const varType &var2);
         friend varType operator-=(varType &var, const int& op);
+        friend varType operator-=(varType &var1, const varType &var2);
         friend varType operator*=(varType &var, const int& op);
         friend varType operator*=(varType &var1, const varType &var2);
         friend varType operator/=(varType &var, const int& op);
@@ -59,3 +67,5 @@ class varType{
         std::variant<int, double, std::string> value;
     private:
 };
+
+varType varPow(int a, varType var);

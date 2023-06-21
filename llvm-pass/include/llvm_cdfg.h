@@ -1,7 +1,7 @@
 #ifndef __LLVM_CDFG_H__
 #define __LLVM_CDFG_H__
 
-//#define DUMP_TMP_CDFG
+#define DUMP_TMP_CDFG
 #define BITWIDTH 8
 
 
@@ -210,7 +210,7 @@ public:
     LLVMCDFGNode* getOutputNode(Value *ins, BasicBlock *BB);
 
     ///recursively find array assess stride & bound
-    std::vector<PHINode*> arrayStride(LLVMCDFGNode* opnode, std::map<int, std::pair<double,std::pair<varType,varType>>>* factortable);
+    std::vector<PHINode*> arrayStride(LLVMCDFGNode* opnode, std::map<int, std::pair<varType,std::pair<varType,varType>>>* factortable);
     std::vector<PHINode*> arrayStride(Value* opnode, std::map<int, std::pair<double,std::pair<double,double>>>* factortable);
     
 	// Transfer PHI nodes to SELECT nodes

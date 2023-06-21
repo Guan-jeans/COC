@@ -361,6 +361,12 @@ void LLVMCDFG::initialize()
                         if(!pred->getType()->isPointerTy()){
                             inputNode = getInputNode(arg, BB);
                             inputNode->setCustomInstruction("ArgIn");
+                            for(auto iter : _funcArgs){
+                                if(arg == iter.second){
+                                    inputNode->setArgIn(iter.first);
+                                    break;
+                                }
+                            }
                         }
                     }
                     EdgeType type = EDGE_TYPE_DATA;
@@ -1365,8 +1371,14 @@ void LLVMCDFG::handlePHINodes()
 				LLVMCDFGNode* BRNode = this->node(BRI);
 				if(!BRI->isConditional()){
                     auto &inNodes = BRNode->inputNodes();
-                    assert(inNodes.size() == 1); // only one conditional predecessor after createCTRLORTree
-                    previousCtrlNode = inNodes[0];
+                    ///TODO:this is a very abnormal loop with a subsequent unconditional branch to PHINode
+                    if(inNodes.size() == 0){
+                        errs() << "unconditional jump\n";
+                        previousCtrlNode = BRNode;
+                    }else{
+                        assert(inNodes.size() == 1); // only one conditional predecessor after createCTRLORTree
+                        previousCtrlNode = inNodes[0];
+                    }
 				}else{
 					assert(BRNode->inputNodes().size() == 1); // only one condition predecessor
                     LLVMCDFGNode *ctrlNode = BRNode->inputNodes()[0];
@@ -1402,6 +1414,12 @@ void LLVMCDFG::handlePHINodes()
                 phiParent->setConstVal(0);
 			}else if(Argument *ARG = dyn_cast<Argument>(V)){
                 phiParent = addNode("ArgIn", bb);
+                for(auto iter : _funcArgs){
+                    if(ARG == iter.second){
+                        phiParent->setArgIn(iter.first);
+                        break;
+                    }
+                }
                 //phiParent->setConstVal(0);
 			}else{								
                 if(Instruction* ins = dyn_cast<Instruction>(V)){
@@ -1684,7 +1702,7 @@ void LLVMCDFG::fuseAccConstNode()
                         isShl = true;
                     }
                 }
-                if(isMul || isShl){
+                if(isMul || (isShl && dst->getInputIdx(node) == 0)){
                     int otherIdx = 1-dst->getInputIdx(node);
                     auto otherOp = dst->getInputPort(otherIdx);
                     if(otherOp->customInstruction() == "CONST"){
@@ -2066,14 +2084,6 @@ void LLVMCDFG::addLoopExitNodes()
 void LLVMCDFG::removeRedundantNodes()
 {
     auto nodes = _nodes;
-    for(auto &elem : nodes){
-        auto node = elem.second;
-        Instruction *ins = node->instruction();
-        std::string customIns = node->customInstruction();
-        if(node->isConditional()){ // is br nodes
-            delNodeTree(node);// to delete BrNode & all of its parents nodes recursively
-        }
-    }
     // remove redundant nodes iteratively until no node to be remove
     bool removed = true;
     while(removed){
@@ -2353,22 +2363,28 @@ std::pair<int, int> BinaryConstOp(Instruction *Bi)
 }
 
 ///to get the constant operand of a BinaryOperation(first:OperandIndex; second:IntValue)
-std::pair<int, int> BinaryConstOp(LLVMCDFGNode* Bn)
+std::pair<int, varType> BinaryConstOp(LLVMCDFGNode* Bn)
 {
     int OperandIndex;
-    int constOp;
+    varType constOp;
     assert(Bn && (Bn->inputNodes().size() == 2));
     if (Bn->getInputPort(0)->hasConst())
     {
         constOp = Bn->getInputPort(0)->constVal();
         OperandIndex = 0;
         //errs() << "\t" << "Instructions: " << Bi->getName().str() << "\n";
+    }else if (Bn->getInputPort(0)->hasArgIn()){
+        constOp = "arg" + std::to_string(Bn->getInputPort(0)->argNum());
+        OperandIndex = 0;
     }
     else if (Bn->getInputPort(1)->hasConst())
     {
         constOp = Bn->getInputPort(1)->constVal();
         OperandIndex = 1;
         //errs() << "\t" << "Instructions: " << Bi->getName().str() << "\n";
+    }else if (Bn->getInputPort(1)->hasArgIn()){
+        constOp = "arg" + std::to_string(Bn->getInputPort(1)->argNum());
+        OperandIndex = 1;
     }else{
         return std::make_pair(-1, 0);
         assert(0&&"do not have Constant");
@@ -2631,11 +2647,11 @@ void LLVMCDFG::FindLoopIdxSafetyBr(int level, Value* bound){
         }
     }
     outs() << "Find LoopIdx Safety of level "<< level <<"\n";
-    outs() << "header "<< header->getName() << "'s final ctrlNodes are ";
-    for(auto iter : _BBctrlDependentNode[header]){
-        outs() << iter.first->getName() << ", " << iter.second << ";";
-    }
-    outs() << "\n";
+    // outs() << "header "<< header->getName() << "'s final ctrlNodes are ";
+    // for(auto iter : _BBctrlDependentNode[header]){
+    //     outs() << iter.first->getName() << ", " << iter.second << ";";
+    // }
+    // outs() << "\n";
 }
 
 ///analyze loop index
@@ -2653,26 +2669,17 @@ void LLVMCDFG::LoopIdxAnalyze(){
     bounds.clear();
     strides.clear();
     
-//get every nests' idx stride & bound
+    //get every nests' idx stride & bound
     for(int level = 0; level < total_level; level++){
         ///get all basicblocks of this loop nest
         std::set<BasicBlock*> temNestBBs;
         temNestBBs.insert(nestloops[level]->getBlocks().begin(), nestloops[level]->getBlocks().end());
-        Instruction* idx_gen_oprand;
-        Value* indexbegin, *indexend;
-        int stride,leftbound,rightbound;
-        BasicBlock* exitBB = nestloops[level]->getExitBlock();
-        Instruction* exitins = exitBB->getTerminator();
-        auto branch = dyn_cast<BranchInst>(exitins);
+        BasicBlock* exitingBB = nestloops[level]->getExitingBlock();
+        assert(exitingBB != NULL);
+        Instruction* exitingins = exitingBB->getTerminator();
+        auto branch = dyn_cast<BranchInst>(exitingins);
         CmpInst* exitcmp;
         PHINode* idxPhi = NULL;
-        //maybe outmost loop
-        if(!temNestBBs.count(exitBB)){
-            exitBB = exitBB->getSinglePredecessor();
-            assert(exitBB&&"how does it exit?");
-            exitins = exitBB->getTerminator();
-            branch = dyn_cast<BranchInst>(exitins);
-        }
 
         errs() << "nest: " << level << " have blocks: ";
         for(auto BI = temNestBBs.begin(); BI != temNestBBs.end(); BI++){
@@ -2681,7 +2688,7 @@ void LLVMCDFG::LoopIdxAnalyze(){
         }
         
         errs() << "\n"; 
-        errs() << "exit block is: " << exitBB->getName().str() <<"\n";
+        errs() << "exiting block is: " << exitingBB->getName().str() <<"\n";
         errs() << "exit branch is: "; branch->dump();
         //errs() << "Canonical Induction Variable is: ";nestloops[level]->getCanonicalInductionVariable()->dump();
 
@@ -2691,18 +2698,68 @@ void LLVMCDFG::LoopIdxAnalyze(){
             errs() << "exit cmp is: "; exitcmp->dump();
         }
 
+        ///get all basicblocks of this loop nest
         idxPhi = InstoPHI(exitcmp);
+        for(auto BI = temNestBBs.begin(); BI != temNestBBs.end(); BI++){
+            BasicBlock *temBB = *BI;
+            if (detected.find(temBB) == detected.end())
+            {
+                LoopexclusiveBBs[level].insert(temBB);
+                for (auto II = temBB->begin(); II != temBB->end(); II++)
+                {
+                    Instruction *ins = &*II;
+                    if (auto Phi = dyn_cast<PHINode>(ins))
+                    {
+                        if(Phi != idxPhi){
+                            continue;
+                        }
+                        PHItoLevel[Phi] = level;
+                    }
+                }
+            }
+        } 
+        detected.insert(temNestBBs.begin(),temNestBBs.end());
+        _LoopexclusiveBBs = LoopexclusiveBBs;
+        // for(int level = 0; level < LoopexclusiveBBs.size(); level++){
+        //     errs() << "level"<<level <<" has: ";
+        //     for(auto elem:LoopexclusiveBBs[level]){
+        //         errs() << elem->getName() <<", ";
+        //     }
+        //     errs() << ";\n";
+        // }
+
+        Instruction *idx_gen_oprand;
+        Value* InitialIVValue, *FinalIVValue;
         if(!nestloops[level]->getBounds(*SE).hasValue()){
-            continue;
-        }
-        //errs() << "getBoundFuntion: level step: "<< nestloops[level]->getBounds(*SE).getPointer()->getStepInst().getName().str() << "\n";
-        if (auto LoopBound = (nestloops[level]->getBounds(*SE).getPointer()))
-        {   
-            Instruction *idx_gen_oprand = &(LoopBound->getStepInst());
-            Value* InitialIVValue, *FinalIVValue;
+            for (int i = 0; i < idxPhi->getNumOperands(); i++){
+                auto incomingBB = idxPhi->getIncomingBlock(i);
+                errs() << "incoming value:"; idxPhi->getIncomingValue(i)->dump();
+                if(temNestBBs.find(incomingBB) == temNestBBs.end()){
+                    InitialIVValue = idxPhi->getIncomingValue(i);
+                }else{
+                    if(dyn_cast<Instruction>(idxPhi->getIncomingValue(i))){
+                        idx_gen_oprand = dyn_cast<Instruction>(idxPhi->getIncomingValue(i));
+                        FinalIVValue = exitcmp->getOperand(1);
+                    }else if(auto V = dyn_cast<ConstantInt>(idxPhi->getIncomingValue(i))){
+                        idx_gen_oprand = NULL;
+                        FinalIVValue = V;
+                    }else{
+                        assert(false && "what incoming?");
+                    }
+                }
+            }
+        }else{
+            auto LoopBound = (nestloops[level]->getBounds(*SE).getPointer());
+            idx_gen_oprand = &(LoopBound->getStepInst());
             InitialIVValue = (&(LoopBound->getInitialIVValue()));
             FinalIVValue = (&(LoopBound->getFinalIVValue()));
-            auto tem2 = nestloops[level];
+        }
+        //errs() << "getBoundFuntion: level step: "<< nestloops[level]->getBounds(*SE).getPointer()->getStepInst().getName().str() << "\n";
+        errs() << "InitialIVValue: " << InitialIVValue->getName() << "\n";
+        errs() << "FinalIVValue: " << FinalIVValue->getName() << "\n";
+        //errs() << "idx_gen_oprand: " << idx_gen_oprand->getName() << "\n";
+        if (idx_gen_oprand != NULL)
+        {
             //stride
             if(idx_gen_oprand->getOpcode() != Instruction::Add && idx_gen_oprand->getOpcode() != Instruction::Sub){
                 errs() << "\t" << idxPhi->getName().str() << " had non-affine operation\n";
@@ -2710,36 +2767,23 @@ void LLVMCDFG::LoopIdxAnalyze(){
             }else{
                 if (auto V = dyn_cast<Constant>(idx_gen_oprand->getOperand(0)))
                 {
-                    int stride;
-                    if (ConstantInt *CI = dyn_cast<ConstantInt>(V))
-                    {
-                        stride = CI->getSExtValue();
+                    if(idx_gen_oprand->getOpcode() != Instruction::Sub){
+                        int stride = castConstInt(V);
+                        errs() << "\t" << "Instructions: " << idx_gen_oprand->getName().str() << "\n";
+                        strides[level] = stride;
                     }
-                    else if (ConstantFP *FP = dyn_cast<ConstantFP>(V))
-                    {
-                        stride = (int)FP->getValueAPF().convertToFloat();
-                    }
-                    errs() << "\t"
-                        << "Instructions: " << idx_gen_oprand->getName().str() << "\n";
-                    strides[level] = stride;
                 }
                 else if (auto V = dyn_cast<ConstantInt>(idx_gen_oprand->getOperand(1)))
                 {
-                    int stride;
-                    if (ConstantInt *CI = dyn_cast<ConstantInt>(V))
-                    {
-                        stride = CI->getSExtValue();
-                    }
-                    else if (ConstantFP *FP = dyn_cast<ConstantFP>(V))
-                    {
-                        stride = (int)FP->getValueAPF().convertToFloat();
-                    }
-                    errs() << "\t"
-                        << "Instructions: " << idx_gen_oprand->getName().str() << "\n";
+                    int stride = castConstInt(V);
+                    errs() << "\t"<< "Instructions: " << idx_gen_oprand->getName().str() << "\n";
                     strides[level] = stride;
                 }
                 else{
                     errs() << "\t" << idxPhi->getName().str() << " have affain operation, but no constant operands\n";
+                }
+                if(idx_gen_oprand->getOpcode() == Instruction::Sub){
+                    strides[level] = -strides[level];
                 }
             }
             //bound
@@ -2747,6 +2791,20 @@ void LLVMCDFG::LoopIdxAnalyze(){
                 bounds[level].first = castConstInt(CV);
             }else{
                 errs() << "\tinitial value is not ConstantInt\n";
+                bool findArgIn = false;
+                for(auto iter : _funcArgs){
+                    auto arg = iter.second;
+                    if(arg == InitialIVValue){
+                        errs() << "\tInitialIVValue is the "<< iter.first << " input param of this functuion\n";
+                        FindLoopIdxSafetyBr(level, InitialIVValue);
+                        bounds[level].first = "arg" + std::to_string(iter.first);
+                        findArgIn = true;
+                        break;
+                    }
+                }
+                if(!findArgIn){
+                    _nestLoopisAffine = false;
+                }
             }
             if(auto CV = dyn_cast<ConstantInt>(FinalIVValue)){
                 bounds[level].second = castConstInt(CV);
@@ -2767,206 +2825,74 @@ void LLVMCDFG::LoopIdxAnalyze(){
                     _nestLoopisAffine = false;
                 }
             }
-            if(exitcmp->getOperand(0) == idxPhi){
-                if(bounds[level].second.index() == 0){
-                    bounds[level].second = strides[level] + bounds[level].second;
-                }else{
-                    assert(false&&"complete");
+            bool NormalJumpout = true;
+            bool JumpoutCond;
+            if(branch->getSuccessor(0) == idxPhi->getParent()){///cmp is false, loop jumpout
+                JumpoutCond = false;
+                errs() << "\t"<< exitcmp->getName().str()<<" is true, loop repeat; opt-analyzed bounds[level].second = "<<bounds[level].second.to_string() << "\n";
+            }else{///cmp is true, loop jumpout
+                JumpoutCond = true;
+                errs() << "\t"<< exitcmp->getName().str()<<" is true, loop jumpout;\n";
+                errs() << "\topt-analyzed: bounds[level].second = "<<bounds[level].second.to_string() << "\n";
+            }
+            if(exitcmp->getOperand(0) != idxPhi  && exitcmp->getOperand(0) != idx_gen_oprand){
+                NormalJumpout = false;
+                errs() << "\t"<< exitcmp->getName().str()<<" do not compare loopidx or its inc value "<<bounds[level].second.to_string() << "\n";
+            }
+            auto lb = bounds[level].first;
+            auto rb = bounds[level].second;
+            int stride = strides[level];
+            if(NormalJumpout){
+                switch(exitcmp->getPredicate()){
+                    case CmpInst::ICMP_EQ:{
+                        if(!JumpoutCond){
+                            assert(false&&"what?jumpout");
+                        }
+                        break;
+                    }
+                    case CmpInst::ICMP_NE:{
+                        if(JumpoutCond){
+                            bounds[level].second = lb + stride;
+                            // assert(false&&"what?jumpout");
+                        }
+                        break;
+                    }
+                    case CmpInst::ICMP_SLE:
+                    case CmpInst::ICMP_ULE:
+                    case CmpInst::ICMP_SGE:
+                    case CmpInst::ICMP_UGE:{
+                        bounds[level].second = (rb-lb-1)/stride * stride + lb;
+                        break;
+                    }
+                    case CmpInst::ICMP_SLT:
+                    case CmpInst::ICMP_ULT:
+                    case CmpInst::ICMP_SGT:
+                    case CmpInst::ICMP_UGT:{
+                        bounds[level].second = (rb-lb)/stride * stride + lb;
+                        break;
+                    }
+                    default:
+                        assert(false);
+                        break;
                 }
-            }else if(auto truenext = branch->getSuccessor(0)){
-                errs()<<idxPhi->getName().str()<<" is in "<<idxPhi->getParent()->getName().str()<<"\n";
-                errs()<<"true next is "<<truenext->getName().str()<<"\n";
-                if(truenext == idxPhi->getParent()){///cmp is true, but loop repeat
-                    bounds[level].second += strides[level];///TODO: all right?
-                    errs() << "\t"<< exitcmp->getName().str()<<" is true, but loop repeat; bounds[level].second = "<<bounds[level].second.to_string() << "\n";
+                if(exitcmp->getOperand(0) == idx_gen_oprand){
+                    bounds[level].second = bounds[level].second - stride;
                 }
+            }else{
+                assert(false&& "abnormal jumpout");
             }
         }else{
-            errs() << "\t" <<  " had no LoopBound pointer\n";
-            this->_nestLoopisAffine = false;
+            int left, right;
+            if(auto CV1 = dyn_cast<ConstantInt>(InitialIVValue))
+                left = castConstInt(CV1); 
+            if(auto CV2 = dyn_cast<ConstantInt>(FinalIVValue))
+                right = castConstInt(CV2);
+            strides[level] = right - left;
+            bounds[level].first = left;
+            bounds[level].second = right;
         }
-
-
-        for(auto BI = temNestBBs.begin(); BI != temNestBBs.end(); BI++){
-            BasicBlock *temBB = *BI;
-            if (detected.find(temBB) == detected.end())
-            {
-                LoopexclusiveBBs[level].insert(temBB);
-                for (auto II = temBB->begin(); II != temBB->end(); II++)
-                {
-                    Instruction *ins = &*II;
-                    if (auto Phi = dyn_cast<PHINode>(ins))
-                    {
-                        if(Phi != idxPhi){
-                            continue;
-                        }
-                        PHItoLevel[Phi] = level;
-                    }
-                }
-            }
-            /*
-                for (auto II = temBB->begin(); II != temBB->end(); II++)
-                {
-                    Instruction *ins = &*II;
-                    if (auto Phi = dyn_cast<PHINode>(ins))
-                    {
-                        if(Phi != idxPhi){
-                            continue;
-                        }
-                        PHItoLevel[Phi] = level;
-                        BasicBlock *PhiNext;
-                        for (int i = 0; i < Phi->getNumOperands(); i++)
-                        {
-                            PhiNext = Phi->getIncomingBlock(i);
-                            errs() << "\tPHINode: " << Phi->getName().str() << " getIncomingBlock(" << i << ") is: " << PhiNext->getName().str() << "\n";
-                            if (temNestBBs.find(PhiNext) != temNestBBs.end())
-                            {
-                                idx_gen_oprand = dyn_cast<Instruction>(Phi->getIncomingValueForBlock(PhiNext)); // PROBLEM
-                                if (dyn_cast<SExtInst>(idx_gen_oprand))
-                                {
-                                    idx_gen_oprand = dyn_cast<Instruction>(idx_gen_oprand->getOperand(0));
-                                }
-                                if (idx_gen_oprand->getNumOperands() != 2)
-                                { // to avoid idx_gen_operand is somelike GEP
-                                    continue;
-                                }
-                                bool affineflag = true;
-                                int  stride = 0;
-                                Value *op0, *op1;
-                                while(op0 != Phi && op1 != Phi)
-                                {
-                                    if(idx_gen_oprand->getOpcode() != Instruction::Add && idx_gen_oprand->getOpcode() != Instruction::Sub){
-                                        affineflag = false;
-                                        break;
-                                    }
-                                    op0 = idx_gen_oprand->getOperand(0);
-                                    op1 = idx_gen_oprand->getOperand(1);
-                                    if (auto V = dyn_cast<Constant>(op0))
-                                    {
-                                        stride += castConstInt(V);
-                                        errs() << "\t"
-                                               << "Instructions: " << idx_gen_oprand->getName().str() << "\n";
-                                        //strides[level] = stride;
-                                        if(auto next = dyn_cast<Instruction>(idx_gen_oprand->getOperand(1)))
-                                            idx_gen_oprand = next;
-                                    }
-                                    else if (auto V = dyn_cast<ConstantInt>(op1))
-                                    {
-                                        stride += castConstInt(V);
-                                        errs() << "\t"
-                                               << "Instructions: " << idx_gen_oprand->getName().str() << "\n";
-                                        //strides[level] = stride;
-                                        if(auto next = dyn_cast<Instruction>(idx_gen_oprand->getOperand(0)))
-                                            idx_gen_oprand = next;
-                                    }
-                                    else
-                                    { // index operation has non-constant oprand
-                                        errs() << "\t" << Phi->getName().str() << " had affain operation but the Operand is not Const\n";
-                                        this->_nestLoopisAffine = false;
-                                        break;
-                                    }
-                                }
-                                if(affineflag){
-                                    strides[level] = stride;
-                                }else{
-                                    errs() << "\t" << Phi->getName().str() << " had non-affain operation\n";
-                                    this->_nestLoopisAffine = false;
-                                }
-                                if (isloopsAffine())
-                                {
-                                    bool flag = true; // flag false means: tem phi control branch
-                                    for (auto phiusers : Phi->users())
-                                    {
-                                        if (auto I = dyn_cast<Instruction>(phiusers))
-                                        {
-                                            // errs() << "PHI node users: " << I->getName().str() << "\n";
-                                            if (auto cmp = dyn_cast<ICmpInst>(I))
-                                            {
-                                                if(cmp != exitcmp)
-                                                    continue;
-                                                errs() << "\tcmp node is: " << cmp->getName().str() << "\n";
-                                                flag = false;
-                                                bounds[level].second = BinaryConstOp(I).second + stride;
-                                                //errs() << "\twhy: bounds[level].second = "<<bounds[level].second << "\n";
-                                                if(auto truenext = branch->getSuccessor(0)){
-                                                    errs()<<Phi->getName().str()<<" is in "<<Phi->getParent()->getName().str()<<"\n";
-                                                    errs()<<"true next is "<<truenext->getName().str()<<"\n";
-                                                    if(truenext == Phi->getParent()){///cmp is true, but loop repeat
-                                                        bounds[level].second = BinaryConstOp(I).second + stride + stride;
-                                                        errs() << "\t"<< cmp->getName().str()<<" is true, but loop repeat; bounds[level].second = "<<bounds[level].second << "\n";
-                                                    }
-                                                } 
-                                            }
-                                        }
-                                    }
-                                    if (flag)//phi do not control CMP directly
-                                    {
-                                        for (auto opusers : Phi->getIncomingValueForBlock(PhiNext)->users())
-                                        {
-                                            if (auto I = dyn_cast<Instruction>(opusers))
-                                            {
-                                                if (auto cmp = dyn_cast<ICmpInst>(I))
-                                                {
-                                                    if(cmp != exitcmp)
-                                                        continue;
-                                                    errs() << "\tcmp node is: " << cmp->getName().str() << "\n";
-                                                    bounds[level].second = BinaryConstOp(I).second;
-                                                    if(auto truenext = branch->getSuccessor(0)){
-                                                        errs()<<Phi->getName().str()<<" is in "<<Phi->getParent()->getName().str()<<"\n";
-                                                        errs()<<"true next is "<<truenext->getName().str()<<"\n";
-                                                        if(truenext == Phi->getParent()){///cmp is true, but loop repeat
-                                                            bounds[level].second = BinaryConstOp(I).second + stride;
-                                                            errs() << "\t"<< cmp->getName().str()<<" is true, but loop repeat; bounds[level].second = "<<bounds[level].second << "\n";
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            else
-                            { /// I want to get the Begin of affine idx, But can't confirm is this right...?
-                                /// thought only two operands in PHINode
-                                indexbegin = Phi->getIncomingValueForBlock(PhiNext);
-                                if (auto V = dyn_cast<ConstantInt>(indexbegin))
-                                {
-                                    if (ConstantInt *CI = dyn_cast<ConstantInt>(V))
-                                    {
-                                        bounds[level].first = CI->getSExtValue();
-                                    }
-                                    else if (ConstantFP *FP = dyn_cast<ConstantFP>(V))
-                                    {
-                                        bounds[level].first = (int)FP->getValueAPF().convertToFloat();
-                                    }
-                                }
-                                else
-                                {
-                                    errs() << "\t" << Phi->getName().str() << " had non certain begin index\n";
-                                    this->_nestLoopisAffine = false;
-                                }
-                            }
-                        }
-                    }
-                }
-            }*/
-        } 
-        if (auto LoopBound = nestloops[level]->getBounds(*SE)){
-            errs() << "\tdirection: " << int(LoopBound.getPointer()->getDirection()) <<"\n";
-            LoopBound.getPointer()->getFinalIVValue().dump();
-            LoopBound.getPointer()->getInitialIVValue().dump();
-            LoopBound.getPointer()->getStepInst().dump();
-        }
-        detected.insert(temNestBBs.begin(),temNestBBs.end());
     }
-    _LoopexclusiveBBs = LoopexclusiveBBs;
-    for(int level = 0; level < LoopexclusiveBBs.size(); level++){
-        errs() << "level"<<level <<" has: ";
-        for(auto elem:LoopexclusiveBBs[level]){
-            errs() << elem->getName() <<", ";
-        }
-        errs() << ";\n";
-    }
+
     // load stride information when loopsAffine is true
     // if loop is not affine--analyze END
     if(isloopsAffine()){
@@ -2982,8 +2908,7 @@ void LLVMCDFG::LoopIdxAnalyze(){
         varType left = bounds[i].first;
         varType right = bounds[i].second;
         varType count = 0;
-        count = ((right - left + stride - 1)/stride);
-        bounds[i].second = (count-1) * stride + left;
+        count = (right - left + stride)/stride;
         // if(abs(stride)==1 || (right - left)%stride == 0)
         //     bounds[i].second -= stride;
         // else
@@ -3135,9 +3060,9 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(Value* opnode, std::map<int, std::pa
                     for(auto phi : innerphis){
                         int level = PHItoLevel[phi];
                         if((*factortable)[level].first == 0) (*factortable)[level].first = getLoopsAffineStrides(level);
-                        (*factortable)[level].first /= pow(2, OperandIndextoConst.second);
-                        (*factortable)[level].second.first /= pow(2, OperandIndextoConst.second);
-                        (*factortable)[level].second.second /= pow(2, OperandIndextoConst.second);
+                        (*factortable)[level].first /= varPow(2, OperandIndextoConst.second);
+                        (*factortable)[level].second.first /= varPow(2, OperandIndextoConst.second);
+                        (*factortable)[level].second.second /= varPow(2, OperandIndextoConst.second);
                     }
                     return innerphis;
                 }
@@ -3227,7 +3152,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(Value* opnode, std::map<int, std::pa
 */
 
 ///recursively find array assess stride & bound
-std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, std::pair<double,std::pair<varType, varType>>>* factortable){
+std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, std::pair<varType,std::pair<varType, varType>>>* factortable){
     auto ins = opnode->instruction();
     //if return {} && factortable->clear() means non-affine operation
     if(factortable == NULL || factortable->empty()){
@@ -3267,7 +3192,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
         }
         
         if(opnode->inputNodes().size() == 2){
-            std::pair<int, int> OperandIndextoConst = BinaryConstOp(opnode);
+            std::pair<int, varType> OperandIndextoConst = BinaryConstOp(opnode);
             //checkInsInputs(temins);//flatened DFG need no checkInsInputs
             switch (temopcode)
             {
@@ -3278,7 +3203,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                     arrayStride(opnode->getInputPort(1), NULL);
                     return {};
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto innerphis = arrayStride(opnode->getInputPort(1-OperandIndextoConst.first), factortable);
                     for(auto phi : innerphis){
                         int level = PHItoLevel[phi];
@@ -3299,7 +3224,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                     arrayStride(opnode->getInputPort(1), NULL);
                     return {};
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto innerphis = arrayStride(opnode->getInputPort(0), factortable);
                     for(auto phi : innerphis){
                         int level = PHItoLevel[phi];
@@ -3319,16 +3244,16 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                     arrayStride(opnode->getInputPort(1), NULL);
                     return {};
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto innerphis = arrayStride(opnode->getInputPort(0), factortable);
                     for(auto phi : innerphis){
                         int level = PHItoLevel[phi];
                         if((*factortable)[level].first == 0) (*factortable)[level].first = getLoopsAffineStrides(level);
                         //errs()<< "shl: " << (int)(*factortable)[level].first<<"<<"<<Coefficient<<"!!!!!!\n";
-                        (*factortable)[level].first = (int)(*factortable)[level].first << coefficient;
+                        (*factortable)[level].first = (*factortable)[level].first * varPow(2, coefficient);
                         //errs()<<"result is: "<< (int)(*factortable)[level].first<<"!!!!\n";
-                        (*factortable)[level].second.first = (*factortable)[level].second.first * pow(2, coefficient);
-                        (*factortable)[level].second.second = (*factortable)[level].second.second * pow(2, coefficient);
+                        (*factortable)[level].second.first = (*factortable)[level].second.first * varPow(2, coefficient);
+                        (*factortable)[level].second.second = (*factortable)[level].second.second * varPow(2, coefficient);
                     }
                     return innerphis;
                 }
@@ -3340,14 +3265,14 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                     arrayStride(opnode->getInputPort(1), NULL);
                     return {};
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto innerphis = arrayStride(opnode->getInputPort(0), factortable);
                     for(auto phi : innerphis){
                         int level = PHItoLevel[phi];
                         if((*factortable)[level].first == 0) (*factortable)[level].first = getLoopsAffineStrides(level);
-                        (*factortable)[level].first /= pow(2, OperandIndextoConst.second);
-                        (*factortable)[level].second.first /= pow(2, OperandIndextoConst.second);
-                        (*factortable)[level].second.second /= pow(2, OperandIndextoConst.second);
+                        (*factortable)[level].first /= varPow(2, OperandIndextoConst.second);
+                        (*factortable)[level].second.first /= varPow(2, OperandIndextoConst.second);
+                        (*factortable)[level].second.second /= varPow(2, OperandIndextoConst.second);
                     }
                     return innerphis;
                 }
@@ -3362,7 +3287,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                     else
                         return {};
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto innerphis = arrayStride(opnode->getInputPort(1-OperandIndextoConst.first), factortable);
                     if(innerphis.empty()){//may add something else
                         factortable->clear();
@@ -3384,7 +3309,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                     arrayStride(opnode->getInputPort(1), NULL);
                     return {};
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto loopbound = _loopsAffineBounds;
                     auto loopstride = _loopsAffineStrides;
                     auto innerphis = arrayStride(opnode->getInputPort(1-OperandIndextoConst.first), factortable);
@@ -3411,7 +3336,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                         for(auto phi : temphis1){///to Negate subtrahends
                             int level = PHItoLevel[phi];
                             if((*factortable)[level].first == 0) (*factortable)[level].first = 1;
-                            (*factortable)[level].first = -(*factortable)[level].first;
+                            (*factortable)[level].first = 0-(*factortable)[level].first;
                         }
                         temphis1.insert(temphis1.end(), temphis0.begin(), temphis0.end());
                         return temphis1;
@@ -3419,7 +3344,7 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                         return {};
                     }
                 }else if(OperandIndextoConst.first == 0){
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto temphis1 = arrayStride(opnode->getInputPort(1), factortable);
                     auto phi = *temphis1.begin();///to Negate subtrahends
                                                 ///constant only once
@@ -3428,12 +3353,12 @@ std::vector<PHINode*> LLVMCDFG::arrayStride(LLVMCDFGNode* opnode, std::map<int, 
                         if((*factortable)[level].first == 0){
                             (*factortable)[level].first = 1;
                         }
-                        (*factortable)[level].first = -(*factortable)[level].first;
+                        (*factortable)[level].first = 0-(*factortable)[level].first;
                         //bound
                         (*factortable)[level].second.first = coefficient - (*factortable)[level].second.first;
                         (*factortable)[level].second.second =  coefficient - (*factortable)[level].second.second;
                 }else{
-                    int coefficient = OperandIndextoConst.second;
+                    varType coefficient = OperandIndextoConst.second;
                     auto innerphis = arrayStride(opnode->getInputPort(0), factortable);
                     auto phi = *innerphis.begin();///constant only once
                         int level = PHItoLevel[phi];
@@ -3494,7 +3419,7 @@ void LLVMCDFG::affineAnalyze(){
         GetElementPtrInst *GEP = NULL;
         varType startoffset = 0;
         bool isGEPaffine = true;
-        std::map<int, int> LSstride;
+        std::map<int, varType> LSstride;
         varType LSbounds[3] = {0, 0, 0};
         int addressidx;
         //initial LSstride for each nest loop
@@ -3526,7 +3451,7 @@ void LLVMCDFG::affineAnalyze(){
             temporary dimension's stride & bounds: first element represent stride; second element represent boundspair
             for boundspair: first element represent leftbounds; second element represent rightbounds
         */
-        std::map<int, std::pair<double, std::pair<varType,varType>>> factortable;
+        std::map<int, std::pair<varType, std::pair<varType,varType>>> factortable;
         ///factortable initialize is must!!
         for(int i = 0; i < getLoopsAffineStrides().size(); i++){
             factortable[i].first = 0;
@@ -3546,7 +3471,7 @@ void LLVMCDFG::affineAnalyze(){
             for (int i = 0; i < factortable.size(); i++)
             {
                 varType left, right;
-                int stride = (int)factortable[i].first;
+                varType stride = factortable[i].first;
                 left = factortable[i].second.first;
                 right = factortable[i].second.second;
                 ///TODO: maybe need to convert accoring to stride's +- ?
@@ -3558,14 +3483,14 @@ void LLVMCDFG::affineAnalyze(){
                     }
                 }
                 LSstride[i] += (stride);
-                if (stride)
+                if (!(stride == 0))
                 { // if stride, this index is calculated in this dimension
                     allzerostride = false;
                     startoffset += (factortable[i].second.first);
                     LSbounds[0] += left;
                     LSbounds[1] += right;
                 }
-                errs() << "\t\tin this GEP " << i << " stride: " << (int)factortable[i].first << " ; leftbound: " << factortable[i].second.first.to_string() << " ; rightbound: " << factortable[i].second.second.to_string() << "\n";
+                errs() << "\t\tin this GEP " << i << " stride: " << factortable[i].first.to_string() << " ; leftbound: " << factortable[i].second.first.to_string() << " ; rightbound: " << factortable[i].second.second.to_string() << "\n";
             }
         }
         varType varLSoffset = node->getLSoffset();
@@ -4412,27 +4337,35 @@ void LLVMCDFG::handleSelectNodes(){
                 InitialSels.insert(node);
                 // extract refresh interval of InitSELECT
                 int levels = _LoopexclusiveBBs.size();
-                varType interval = 1;
-                int initialLevel = levels;
+                varType interval = 1, count = 1, repeat = 1;
+                int initialLevel, iterateLevel;
                 auto initialBB = node->BB();
+                auto iterateBB = pre->BB();
                 for (int i = 0; i < levels; i++)
                 {
                     if (_LoopexclusiveBBs[i].count(initialBB))
                     {
                         initialLevel = i;
                     }
-                }
-                if(initialLevel == levels - 1){
-                    interval = 0;//initial only once
-                }
-                else{
-                    for (int i = 0; i < levels; i++)
+                    if (_LoopexclusiveBBs[i].count(iterateBB))
                     {
-                        if (i <= initialLevel)
-                            interval *= _loopsAffineCounts[i];
+                        iterateLevel = i;
                     }
                 }
-                node->setISELInterval(interval);
+                // if(initialLevel == levels - 1){
+                //     interval = 0;//initial only once
+                // }
+                assert(initialLevel>=iterateLevel);
+                for (int i = 0; i < levels; i++)
+                {
+                    if (i < iterateLevel)
+                        interval *= _loopsAffineCounts[i];
+                    else if(i <= initialLevel)
+                        count *= _loopsAffineCounts[i];
+                    else
+                        repeat *= _loopsAffineCounts[i];
+                }
+                node->setAccPattern(count,interval,repeat);
             }
             //assert(preins != NULL && "what's wrong with backedge");
             //start from initial, find select with LOOPSTART down
@@ -4881,7 +4814,7 @@ void LLVMCDFG::printDOT(std::string fileName) {
             ofs << ", Stride=[ ";
             auto stride = node->getLSstride();
             for(int i = 0; i < stride.size(); i++){
-                ofs << i<< ", " << stride[i] <<"; ";
+                ofs << i<< ", " << stride[i].to_string() <<"; ";
             }
             ofs << "], Bounds=[ ";
             auto LSbounds = node->getLSbounds();
@@ -4965,7 +4898,7 @@ void LLVMCDFG::printHierarchyDOT(std::string fileName) {
                 ofs << ", Stride=[ ";
                 auto stride = node->getLSstride();
                 for(int i = 0; i < stride.size(); i++){
-                    ofs << i<< ", " << stride[i] <<"; ";
+                    ofs << i<< ", " << stride[i].to_string() <<"; ";
                 }
                 ofs << "], Bounds=[ ";
                 auto LSbounds = node->getLSbounds();
@@ -5092,10 +5025,12 @@ void LLVMCDFG::printAffineDOT(std::string fileName) {
             ofs << ", " << patternmap["count"].to_string();
             ofs << ", " << patternmap["interval"].to_string();      
             ofs << ", " << patternmap["repeat"].to_string() <<"\"";
-            ofs << ", acc_first=" << node->isAccFirst();///TODO:here acc_first is always initial
+            ofs << ", acc_first=" << node->isAccFirst();
         }
         else if(node->hasConst()){
             ofs << ", label=\""<<name<< ", Const="<< node->constVal() << "\"";
+        }else if(node->hasArgIn()){
+            ofs << ", argNum=" << node->argNum();
         }
         else if(node->isLSaffine()){
             std::string arrayname = node->getLSArrayName();
@@ -5156,7 +5091,11 @@ void LLVMCDFG::printAffineDOT(std::string fileName) {
         //     ofs << "opcode=sel";
         // }
         else if(node->customInstruction() == "InitSELECT"){
-            ofs << ", interval=" << node->getISELInterval().to_string();
+            auto patternmap = node->getAccPattern();
+            ofs << ", isel_params=\"";
+            ofs << patternmap["count"].to_string();
+            ofs << ", " << patternmap["interval"].to_string();      
+            ofs << ", " << patternmap["repeat"].to_string() <<"\"";
         }
         else if(node->customInstruction() != ""){
             if(node->hasConst()){
@@ -5235,10 +5174,12 @@ void LLVMCDFG::printAffineDOT(std::string fileName) {
         }
         ofs << "[operand = " << opIdx;
         if(type == EDGE_TYPE_CTRL){
+            ofs << ", Width = 1";
             ofs << " ,color = red";
         }else if(type == EDGE_TYPE_MEM){
             ofs << " ,color = blue";
         }else{
+            ofs << ", Width = " << 32;
             ofs << " ,color = black";
         }
         bool isBackEdge = edge->src()->isOutputBackEdge(edge->dst());
@@ -5465,10 +5406,12 @@ void LLVMCDFG::printAsSubTask(std::ofstream &ofs, int kernel) {
         }
         ofs << "[operand = " << opIdx;
         if(type == EDGE_TYPE_CTRL){
+            ofs << ", bitwidth = 1";
             ofs << " ,color = red";
         }else if(type == EDGE_TYPE_MEM){
             ofs << " ,color = blue";
         }else{
+            ofs << ", bitwidth = " << 32;
             ofs << " ,color = black";
         }
         bool isBackEdge = edge->src()->isOutputBackEdge(edge->dst());
@@ -5522,7 +5465,7 @@ void LLVMCDFG::generateCDFG()
     handleGEPNodes();
     printDOT(_name + "_after_handleGEPNodes.dot");
 
-    if(!_noPattern){
+    if(!_noPattern && isloopsAffine()){
         affineAnalyze();
         outs() << ">>>>>> affine Access Node\n";
         handleAffineLSNodes(); 
@@ -5572,7 +5515,7 @@ void LLVMCDFG::generateCDFG()
     outs() << ">>>>>> Assign final node name\n";
     assignFinalNodeName();
     //printDOT(_name + "_after_assignFinalNodeName.dot");
-    printAffineDOT("CDFG.dot");
+    printAffineDOT("affine.dot");
     //printAffineDOT("affine_"+_name + ".dot");
 
     outs() << "Generate CDFG Ended\n";
