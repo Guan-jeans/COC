@@ -75,7 +75,6 @@ void LLVMCDFGNode::addInputNode(LLVMCDFGNode *node, int idx, bool isBackEdge, Co
         {
             return;
         }
-        
     }
     _inputPortMap[idx] = node;
     _inputNodes.push_back(node);
@@ -196,6 +195,8 @@ int LLVMCDFGNode::delInputNode(LLVMCDFGNode *node)
 {
     _inputNodes.erase(std::remove(_inputNodes.begin(), _inputNodes.end(), node), _inputNodes.end());
     int idx = _inputInfoMap[node].idx;
+    if(_inputPortMap[idx] == node)
+        _inputPortMap[idx] = NULL;
     _inputInfoMap.erase(node);
     return idx;
 } 

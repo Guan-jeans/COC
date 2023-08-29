@@ -49,7 +49,8 @@ private:
     // control node : LOOPSTART, LOOPEXIT
     // data node : INPUT, OUTPUT
     std::map<BasicBlock*, LLVMCDFGNode*> _loopStartNodeMap;
-    std::map<BasicBlock*, LLVMCDFGNode*> _loopExitNodeMap;
+    std::map<BasicBlock*, LLVMCDFGNode*> _BB2ExitNodeMap;
+    std::map<int, LLVMCDFGNode*> _loop2exitNodesMap;
     std::map<Value*, LLVMCDFGNode*> _ioNodeMap;
 	// std::map<LLVMCDFGNode*, Value*> _ioNodeMapReverse;
     // GEP node info map including pointer name
@@ -61,6 +62,15 @@ private:
     std::map<int, Value*> _funcArgs;
     //loop level to idx safety map
     std::map<int, std::pair<CmpInst*, CondVal>> _safetyMap;
+    //loop bound value
+    std::map<int, std::pair<Value*, Value*>> _loopboundMap;
+
+    //Load Store table
+    std::set<LLVMCDFGNode*> _loadList;
+    std::set<LLVMCDFGNode*> _storeList;
+
+    //instructions in EntryBB, but before loop_begin() & in ExitBB, but after loop_end()
+    std::set<Instruction*> _ExInsList;
 
 public:
     ScalarEvolution *SE;
@@ -86,6 +96,8 @@ public:
     LLVMCDFGNode* addNode(Instruction *ins); // create node according to instruction and add node
     LLVMCDFGNode* addNode(std::string customIns, BasicBlock *BB); // create node according to the custom instruction and add node
     LLVMCDFGNode* addNode(std::string customIns); // create node according to the custom instruction for pattern which is not with BB: TODO ?
+    LLVMCDFGNode* addCpNode(Instruction *ins);  //for multi-store of subtasks
+    LLVMCDFGNode* addCpNode(LLVMCDFGNode *node);  //for multi-store of subtasks
     // delete node and corresponding edges
     void delNode(LLVMCDFGNode *node);
     void delNode(Instruction *ins); 
@@ -145,6 +157,8 @@ public:
     //set function input args
     void setFuncArgs(std::map<int, Value*> argsMap){ _funcArgs = argsMap;}
 
+    void setExInsList(std::vector<Instruction* > outMarkIns){_ExInsList.insert(outMarkIns.begin(), outMarkIns.end());}
+
     // initialize CDFG according to loopBBs
     void initialize();
     // analyze loop index
@@ -152,8 +166,8 @@ public:
     ///find safety branch of variable Idx and modify dependent node
     void FindLoopIdxSafetyBr(int level, Value* bound);
 
-    //affineAnalyze & transform GEP to affine Input
-    void affineAnalyze();
+    //accessAnalyze & transform GEP to affine Input
+    void accessAnalyze();
     // Set Nestloop Affine Strides
     void setLoopsAffineStrides(int level, int stride){ _loopsAffineStrides[level] = stride;}
     void setLoopsAffineStrides(std::map<int, int> AffineStrides){_loopsAffineStrides = AffineStrides;}
@@ -171,6 +185,9 @@ public:
     void setLoopsAffineCounts(std::map<int, varType> AffineCounts){ _loopsAffineCounts = AffineCounts;}
     std::map<int, varType> getLoopsAffineCounts(){return _loopsAffineCounts;}
     varType getLoopsAffineCounts(int level){return _loopsAffineCounts[level];}
+
+    std::set<LLVMCDFGNode*> getLoadList(){return _loadList;}
+    std::set<LLVMCDFGNode*> getStoreList(){return _storeList;}
     
     // add edge between two nodes that have memory dependence (loop-carried)
     void addMemDepEdges();
@@ -210,7 +227,7 @@ public:
     LLVMCDFGNode* getOutputNode(Value *ins, BasicBlock *BB);
 
     ///recursively find array assess stride & bound
-    std::vector<PHINode*> arrayStride(LLVMCDFGNode* opnode, std::map<int, std::pair<varType,std::pair<varType,varType>>>* factortable);
+    std::vector<int> arrayStride(LLVMCDFGNode* opnode, std::map<int, std::pair<varType,std::pair<varType,varType>>>* factortable);
     std::vector<PHINode*> arrayStride(Value* opnode, std::map<int, std::pair<double,std::pair<double,double>>>* factortable);
     
 	// Transfer PHI nodes to SELECT nodes
@@ -235,7 +252,10 @@ public:
     void handleGEPNodes();
 
     // add loop exit nodes
-    void addLoopExitNodes();
+    std::map<int, LLVMCDFGNode*> addLoopExitNodes();
+
+    // add task level control
+    void addTaskCTRL();
 
     // remove redundant nodes, e.g. Branch
     void removeRedundantNodes();

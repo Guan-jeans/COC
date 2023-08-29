@@ -279,7 +279,7 @@ std::string getMappingUnitNameUsingPleasemapme(Function &F, std::map<std::string
 }
 
 // get target loop name (mapping unit name) using the token function "loop_begin()" & "loop_end()"
-std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, std::map<std::string, MappingUnit> &mappingUnitMap, std::map<const llvm::BasicBlock *, std::set<const llvm::BasicBlock *>> SuccBBsMap)
+std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, std::map<std::string, MappingUnit> &mappingUnitMap, std::map<const llvm::BasicBlock *, std::set<const llvm::BasicBlock *>> SuccBBsMap, std::vector<Instruction *> &outMarkLoop)
 {
 	BasicBlock *EntryBB, *ExitBB;
 	Instruction *LoopStart = NULL;
@@ -287,6 +287,7 @@ std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, s
 	std::vector<std::map<int, Loop*>> LoopVec;
 	std::map<int, Loop*> nestLoop;
 	std::map<int, Loop*> finalnestloop;
+	outMarkLoop.clear();
 	for (auto &BB : F){
 		// BB.dump();
 		for (auto &I : BB){
@@ -323,6 +324,15 @@ std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, s
 			errs()<< iter->getName() <<"; ";
 		}
 		errs() << "\n";
+		for(auto &ins : *EntryBB){
+			if(&ins == LoopStart)
+				break;
+			outMarkLoop.push_back(&ins);
+		}
+		for(auto &ins : *ExitBB){
+			if(&ins == LoopStart)
+				outMarkLoop.push_back(&ins);
+		}
 		LoopStart->eraseFromParent();
 		LoopEnd->eraseFromParent();
 		for (auto &elem : mappingUnitMap){
@@ -353,7 +363,7 @@ std::vector<std::map<int, Loop*>> getMappingUnitNameUsingLoopMark(Function &F, s
 					break;
 				finalnestloop[i] = nestLoop[i];
 			}
-			if(targetlevel=-1)
+			if(targetlevel == -1)
 				targetlevel = level-1;
 			auto loopBBs = finalnestloop[targetlevel]->getBlocks();
 			for(auto BB : loopBBs){
@@ -403,10 +413,11 @@ void scheduleTasks(std::map<int, LLVMCDFG*> CDFGs, std::map<int, std::pair<std::
 	outs() <<">>>>>> Merge tasks and Schedule accroding to access dependence <<<<<<\n";
 	std::map<int, std::map<Value*, std::pair<std::set<LLVMCDFGNode*>, std::set<LLVMCDFGNode*>>>> LSaddrTable;
 	std::map<int, std::pair<std::set<Value*>, std::set<Value*>>> LSaddrSets;
-	for(int i = 0; i < LSTable.size(); i++){
+	//for(int i = 0; i < LSTable.size(); i++){
+	for(int i = 0; i < CDFGs.size(); i++){
 		outs() << "-----kernel_" << i << "-----\n";
 		outs() << "\tload values: ";
-		std::set<LLVMCDFGNode*> LoadSet = LSTable[i].first;
+		std::set<LLVMCDFGNode*> LoadSet = CDFGs[i]->getLoadList();
 		for(auto LoadNode : LoadSet){
 			auto addrValue = LoadNode->getLSaddress();
 			assert(addrValue != NULL);
@@ -415,7 +426,7 @@ void scheduleTasks(std::map<int, LLVMCDFG*> CDFGs, std::map<int, std::pair<std::
 			LSaddrSets[i].first.insert(addrValue);
 		}
 		outs() << "\n\tstore values: ";
-		std::set<LLVMCDFGNode*> StoreSet = LSTable[i].second;
+		std::set<LLVMCDFGNode*> StoreSet = CDFGs[i]->getStoreList();
 		for(auto StoreNode : StoreSet){
 			auto addrValue = StoreNode->getLSaddress();
 			assert(addrValue != NULL);
@@ -428,23 +439,52 @@ void scheduleTasks(std::map<int, LLVMCDFG*> CDFGs, std::map<int, std::pair<std::
 	std::ofstream ofs;
 	ofs.open("whole_DFG.dot");
 	ofs << "digraph g{\n";
-	for(int i = 0; i < CDFGs.size(); i++){
-		CDFGs[i]->printAsSubTask(ofs, i);
-	}
-	std::set<std::pair<LLVMCDFGNode*, LLVMCDFGNode*>> nodepair;
-	for(int i = 0; i < LSTable.size(); i++){
+	
+	// std::set<std::pair<LLVMCDFGNode*, LLVMCDFGNode*>> nodepairs;
+	std::set<LLVMCDFGNode*> dependedNodes;
+	int nextflag = 0;
+	// for(int i = 0; i < CDFGs.size(); i++){
+	for(int i = CDFGs.size()-1; i >= 0; i--){
+		bool isFirstStore = true;
 		std::set<Value*> preStoreAddrSet = LSaddrSets[i].second;
-		for(int j = i+1; j < LSTable.size(); j++){
+		for(int j = i+1; j < CDFGs.size(); j++){
 			//RAW
 			std::set<Value*> LoadAddrSet = LSaddrSets[j].first;
 			for(auto LoadAddr:LoadAddrSet){
 				if(preStoreAddrSet.count(LoadAddr)){
 					for(auto src:LSaddrTable[i][LoadAddr].second){
+						auto StoreIns = src->instruction();
 						for(auto dst:LSaddrTable[j][LoadAddr].first){
-							std::string scrName = src->getName() + "_" + std::to_string(i);
+							if(dependedNodes.count(dst)){
+								continue;
+							}
+							LLVMCDFGNode* srcCp = src;
+							if(!isFirstStore){
+								srcCp = CDFGs[i]->addCpNode(src);
+								errs() << "add new store node: " << srcCp->getName() << ";";
+								for(auto srcParent:src->inputNodes()){
+									CDFGs[i]->connectNodes(srcParent, srcCp, src->getInputIdx(srcParent), EDGE_TYPE_DATA);
+								}
+							}
+							if(isFirstStore){
+								isFirstStore = false;
+							}
+							std::string scrName = srcCp->getName() + "_" + std::to_string(i);
 							std::string dstName = dst->getName() + "_" + std::to_string(j);
+							dependedNodes.insert(dst);
+							int trueFlag;
+							if(dst->getDependenceFlag() == -1){//the dstNode is added dependent srcNode for the first time
+								//use the new flag
+								trueFlag = nextflag;
+								nextflag++;
+							}else{
+								trueFlag = dst->getDependenceFlag();
+							}
+							srcCp->setDependenceFlag(trueFlag);
+							dst->setDependenceFlag(trueFlag);
 							outs() << scrName << " -> " << dstName << " label = \"RAW\"\n";
-							ofs << scrName << " -> " << dstName << "[color = blue, label = \"RAW\"];\n";
+							ofs << scrName << " -> " << dstName << "[color = blue, label = \"RAW, ";
+							ofs << "depflag = " << trueFlag << "\"];\n";
 						}
 					}
 				}
@@ -454,16 +494,46 @@ void scheduleTasks(std::map<int, LLVMCDFG*> CDFGs, std::map<int, std::pair<std::
 			for(auto StoreAddr:StoreAddrSet){
 				if(preStoreAddrSet.count(StoreAddr)){
 					for(auto src:LSaddrTable[i][StoreAddr].second){
+						auto StoreIns = src->instruction();
 						for(auto dst:LSaddrTable[j][StoreAddr].second){
-							std::string scrName = src->getName() + "_" + std::to_string(i);
+							if(dependedNodes.count(dst)){
+								continue;
+							}
+							LLVMCDFGNode* srcCp = src;
+							if(!isFirstStore){
+								srcCp = CDFGs[i]->addCpNode(src);
+								errs() << "add new store node: " << srcCp->getName() << ";";
+								for(auto srcParent:src->inputNodes()){
+									CDFGs[i]->connectNodes(srcParent, srcCp, src->getInputIdx(srcParent), EDGE_TYPE_DATA);
+								}
+							}
+							if(isFirstStore){
+								isFirstStore = false;
+							}
+							std::string scrName = srcCp->getName() + "_" + std::to_string(i);
 							std::string dstName = dst->getName() + "_" + std::to_string(j);
-							outs() << scrName << " -> " << dstName << " label = \"RAW\"\n";
-							ofs << scrName << " -> " << dstName << "[color = blue, label = \"WAW\"];\n";
+							dependedNodes.insert(dst);
+							int trueFlag;
+							if(dst->getDependenceFlag() == -1){//the dstNode is added dependent srcNode for the first time
+								//use the new flag
+								trueFlag = nextflag;
+								nextflag++;
+							}else{
+								trueFlag = dst->getDependenceFlag();
+							}
+							srcCp->setDependenceFlag(trueFlag);
+							dst->setDependenceFlag(trueFlag);
+							outs() << scrName << " -> " << dstName << " label = \"WAW\"\n";
+							ofs << scrName << " -> " << dstName << "[color = blue, label = \"WAW, ";
+							ofs << "depflag = " << trueFlag << "\"];\n";
 						}
 					}
 				}
 			}
 		}
+	}
+	for(int i = 0; i < CDFGs.size(); i++){
+		CDFGs[i]->printAsSubTask(ofs, i);
 	}
 	ofs << "}\n";
 	ofs.close();
@@ -550,7 +620,8 @@ namespace {
 				funcArgs[iter->getArgNo()] = &*iter;
 			}
 			///TODO: to support multi-loops in the same level
-            auto LoopVec = getMappingUnitNameUsingLoopMark(F, MappingUnitMap, SuccBBsMap);//check LoopMark first
+			std::vector<Instruction*> outMarkLoop;
+            auto LoopVec = getMappingUnitNameUsingLoopMark(F, MappingUnitMap, SuccBBsMap, outMarkLoop);//check LoopMark first
 			if(LoopVec.empty()){
 				std::string munitName = getMappingUnitNameUsingPleasemapme(F, MappingUnitMap);//then check please_map_me()
 				Loop *tem = MappingUnitMap[munitName].lp;
@@ -601,7 +672,7 @@ namespace {
 				// CDFG->LoopIdxAnalyze();
 				CDFG->initialize();
 				CDFG->printDOT("DFG_ori.dot");
-				// CDFG->affineAnalyze();
+				// CDFG->accessAnalyze();
 				outs() << "########################################################\n";
 				outs() << "Generate CDFG Started\n";
 				CDFG->printHierarchyDOT("hierarchyDOT.dot");
@@ -638,7 +709,7 @@ namespace {
 					for(auto iter:OutterMostUnit.entryBlocks){
 						errs() << iter.first->getName() <<"->>"<< iter.second->getName()<<";";
 					}
-					errs() << "[][][]entryBlocks\n";
+					errs() << "\n[][][]entryBlocks\n";
 					std::map<std::string, MappingUnit> temmap;
 					temmap["the whole DFG"] = OutterMostUnit;
 					printMappingUnitMap(temmap);
@@ -658,13 +729,13 @@ namespace {
 					CDFG->setLoopBBs(OutterMostUnit.allBlocks, OutterMostUnit.entryBlocks, OutterMostUnit.exitBlocks);
 					CDFG->setLoops(nestloops);
 					CDFG->setFuncArgs(funcArgs);
+					CDFG->setExInsList(outMarkLoop);
 					// CDFG->LoopIdxAnalyze();
 					CDFG->initialize();
-					CDFG->printDOT("Ori_"+std::to_string(kernel)+".dot");
-					// CDFG->affineAnalyze();
+					// CDFG->accessAnalyze();
 					CDFG->printHierarchyDOT("hierarchyDOT_"+std::to_string(kernel)+".dot");
 					CDFG->generateCDFG();
-					extractLSInfo(CDFG, kernel, &LSTable);
+					//extractLSInfo(CDFG, kernel, &LSTable);
 					CDFGs[kernel] = CDFG;
 					kernel++;
 				}

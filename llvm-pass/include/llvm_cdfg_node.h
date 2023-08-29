@@ -111,11 +111,10 @@ private:
     int _dataBits;
 
     // initial Sel
-    // varType _interval;//ISEL refresh per _interval cycles
-
+    bool _hasinitial = false;
+    std::pair<int, int> _cummuLevels;//first: initial level; second: iterate level
     // acc increment
     bool _isAcc = false;
-    bool _hasinitial = false;
     int _accfirst=0;
     int _initial;//initial const
     std::map<std::string, varType> _accPattern;//to record the pattern of ACC
@@ -128,9 +127,12 @@ private:
     // affine access pattern for Load/Store--key:level;value:stride
     bool _isLSaffine = false;
     std::map<int, varType> _LSstride;
-    //start offset for pattern access(if _LSstart<0, LS is totally fixed)
+    //start offset for pattern access(if _LSstart="", LS is totally fixed)
     varType _LSstart;
     varType _LSbounds[3];
+
+    //dependence flag between subtasks
+    int _dependeceFlag = -1;
     
 public:
     LLVMCDFGNode(LLVMCDFG *parent) : _parent(parent){}
@@ -233,8 +235,15 @@ public:
     // void setISELInterval(varType interval){_interval = interval;}
     // varType getISELInterval(){return _interval;}
     int getInitial(){return _initial;}
+    void setCummuLevels(int initial, int interval){ auto pair = std::make_pair(initial, interval); _cummuLevels = pair;};
+    std::pair<int, int> getCummuLevels(){return _cummuLevels;}
+    int getCummuInitialLevel(){return _cummuLevels.first;}
+    int getCummuIntervalLevel(){return _cummuLevels.second;}
     void setAccPattern(varType count, varType interval, varType repeat){_accPattern["count"] = count; _accPattern["interval"] = interval; _accPattern["repeat"] = repeat;}
     std::map<std::string, varType> getAccPattern(){if(_isAcc|_hasinitial) return _accPattern; else return {};}
+
+    void setDependenceFlag(int flag){_dependeceFlag = flag;}
+    int getDependenceFlag(){return _dependeceFlag;}
 };
 
 

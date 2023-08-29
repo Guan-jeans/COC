@@ -178,6 +178,8 @@ varType operator*(const varType &var, const int& op){
     if(var.value.index() == 2){
         if(op == 1){
             result = var;
+        }else if(op == 0){
+            result = 0;
         }else{
             result = "(" + std::get<std::string>(var.value) + ")*" + std::to_string(op);
         }
