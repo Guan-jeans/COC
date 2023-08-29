@@ -1,4 +1,4 @@
-App-Compiler
+CO-Compiler
 =======================
 
 Frontend application compiler that generates CDFG from C code based on LLVM
